@@ -7,8 +7,66 @@ from rclpy.node import Node
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from crazyswarm_application.msg import AgentState, AgentsStateFeedback, UserCommand
 
+def get_euclid_dist(point_a, point_b):
+    """Get the 3D euclidean distance between 2 geometry_msgs.msg.Point messages
+
+    Parameters
+    ----------
+    point_a : geometry_msgs.msg.Point
+        Origin Point
+    point_b : geometry_msgs.msg.Point
+        Goal Point
+
+    Returns
+    -------
+    float
+        Distance between point a and b
+    """
+    dx = point_a.x - point_b.x
+    dy = point_a.y - point_b.y
+    dz = point_a.z - point_b.z
+
+    return np.sqrt(dx * dx + dy * dy + dz * dz)
+
+class Agent:
+    def __init__(self, agent_id):
+        if agent_id == "":
+            raise Exception("Created an Agent object without an ID!")
+        
+        self.id = agent_id
+        self.executing_waypoint = False  # True if agent is in the process of executing waypoint else False.
+        self.current_waypoint_cmd = None  # Current waypoint being executed (of type UserCommand)
+        self.flight_state = None  # Current state of agent
+        self.actual_pos = None  # Current actual position
+        self.waypoint_queue = [] # List of waypoints to fulfill
+        self.time_at_last_cmd = time()  # Time elapsed since last waypoint issued
+
+    def add_waypoints(self, waypoints):
+        """Add a list of waypoints to the agent
+
+        Parameters
+        ----------
+        waypoints : List of geometry_msgs.msg.PoseStamped
+            A list of waypoints of PoseStamped message type
+        """
+        self.waypoint_queue.extend(waypoints)
+
+    def get_dist_to_goal(self) -> float :
+        return get_euclid_dist(self.actual_pos.pose.position, self.current_waypoint_cmd.goal)
+
+    def is_waypoint_queue_empty(self) -> bool:
+        return len(self.waypoint_queue) == 0
+
+    def new_waypoint_cmd(self, waypoint_cmd):
+        self.executing_waypoint = True
+        self.current_waypoint_cmd = waypoint_cmd
+
+    def complete_waypoint_cmd(self):
+        self.executing_waypoint = False
+        self.current_waypoint_cmd = None
 
 class planner_ROS(Node):
+
     def __init__(
         self, policy_net, k_size, device="cpu", greedy=False, save_image=False
     ):
@@ -19,35 +77,68 @@ class planner_ROS(Node):
         )
 
         #####
+        # Example waypoints
+        #####
+
+        cf_waypoints = {
+            "cf1": [
+                self.create_posestamped(x=-0.5, y=-0.5, z=1.0, yaw=0.0),
+                self.create_posestamped(x=-0.5, y=-1.0, z=1.0, yaw=0.0),
+                self.create_posestamped(x=-1.0, y=-1.0, z=1.0, yaw=0.0),
+                self.create_posestamped(x=-1.0, y=-0.5, z=1.0, yaw=0.0),
+                self.create_posestamped(x=-0.5, y=-0.5, z=1.0, yaw=1.54),
+            ],
+            "cf2": [
+                self.create_posestamped(x=-0.5, y=0.0, z=1.0, yaw=0.0),
+                self.create_posestamped(x=-1.0, y=0.0, z=1.0, yaw=0.0),
+                self.create_posestamped(x=-1.5, y=0.5, z=1.0, yaw=0.0),
+                self.create_posestamped(x=-2.0, y=0.0, z=1.0, yaw=0.0),
+                self.create_posestamped(x=-1.5, y=-0.5, z=1.0, yaw=0.0),
+                self.create_posestamped(x=-1.0, y=-0.0, z=1.0, yaw=0.0),
+                self.create_posestamped(x=-0.5, y=0.0, z=1.0, yaw=0.707),
+            ],
+            "cf3": [
+                self.create_posestamped(x=-0.5, y=0.5, z=1.0, yaw=0.0),
+                self.create_posestamped(x=-0.5, y=1.0, z=1.0, yaw=0.0),
+                self.create_posestamped(x=-1.0, y=1.0, z=1.0, yaw=0.0),
+                self.create_posestamped(x=-1.0, y=0.5, z=1.0, yaw=0.0),
+                self.create_posestamped(x=-0.5, y=0.5, z=1.0, yaw=0.0),
+            ],
+        }
+
+        #####
         # Example agent list
         #####
 
         self.agent_list = {
-            "cf1": {
-                "executing_waypoint": False,  # True if agent is in the process of executing waypoint, else False.
-                "current_waypoint": None,  # Current wayoint being executed
-                "flight_state": None,  # Current state of agent
-                "actual_pos": self.create_posestamped(
-                    x=0.0, y=0.0, z=0.0
-                ),  # Current actual position
-                "waypoint_queue": [
-                    self.create_posestamped(x=1.0, y=0.0, z=1.0, yaw=0.0),
-                    self.create_posestamped(x=2.0, y=0.0, z=1.0, yaw=0.0),
-                    self.create_posestamped(x=2.0, y=1.0, z=1.0, yaw=0.0),
-                    self.create_posestamped(x=1.0, y=1.0, z=1.0, yaw=0.0),
-                    self.create_posestamped(x=1.0, y=0.0, z=1.0, yaw=0.707),
-                ],  # List of waypoints to fulfill
-                "time_at_last_cmd": time(),  # Time elapsed since last waypoint issued
-            },
+            "cf1": Agent("cf1"),
+            "cf2": Agent("cf2"),
+            "cf3": Agent("cf3"),
         }
+
+        # Add waypoints to each agent
+        for item in self.agent_list.items():
+            agent_id = item[0]
+            agent = item[1]
+
+            agent.add_waypoints(cf_waypoints[agent_id])
+
 
         #####
         # Parameters
         #####
-        self.agent_timeout = 10  # Timeout for agent before it is removed
-        self.pub_wp_timer_period = 1.0  # Time period for publishing waypoint callback (seconds)
-        self.check_agent_timer_period = 1.0  # Time period for checking if agent has fulfilled goals
-        self.goal_tolerance = 0.1  # Distance between goal and actual pose for goal to be fulfilled (meters)
+        # Commented out as 'automatically_declare_parameters_from_overrides' is enabled in node params
+        # self.declare_parameter('agent_timeout', 10.0) # Timeout for agent before it is removed
+        # self.declare_parameter('pub_wp_timer_period', 0.25) # Time period for publishing waypoint callback (seconds)
+        # self.declare_parameter('check_agent_timer_period', 0.25) # Time period for checking if agent has fulfilled goals
+        # self.declare_parameter('goal_tolerance', 0.1) # Distance between goal and actual pose for goal to be fulfilled (meters)
+
+        self.agent_timeout = self.get_parameter('agent_timeout').get_parameter_value().double_value
+        self.pub_wp_timer_period = self.get_parameter('pub_wp_timer_period').get_parameter_value().double_value
+        self.check_agent_timer_period = self.get_parameter('check_agent_timer_period').get_parameter_value().double_value
+        self.goal_tolerance = self.get_parameter('goal_tolerance').get_parameter_value().double_value
+
+        print(self.check_agent_timer_period)
 
         #####
         # Create publishers
@@ -73,9 +164,6 @@ class planner_ROS(Node):
                 )
             )
 
-        # All drones takeoff
-        # self.takeoff_all()
-
         #####
         # Create timers
         #####
@@ -85,9 +173,8 @@ class planner_ROS(Node):
         )
 
         self.check_agent_timer = self.create_timer(
-            self.check_agent_timer_period, self.check_agent_callback
+            self.check_agent_timer_period, self.check_agent_timer_callback
         )
-
 
     def agent_pose_callback(self, pose, agent_id):
         """Subscriber callback to save the actual pose of the agent 
@@ -100,26 +187,91 @@ class planner_ROS(Node):
             Id of Agent
         """
         if agent_id in self.agent_list:
-            self.agent_list[agent_id]["actual_pos"] = pose
+            self.agent_list[agent_id].actual_pos = pose
 
-    def check_agent_callback(self):
+    def agent_state_callback(self, agent_states):
+        time_now = time()
+
+        for agent in agent_states.agents:
+            if agent.id not in self.agent_list:
+                # self.get_logger().error(
+                #     f"Agent {agent.id} has been removed from agent list. Ignoring..."
+                # )
+                continue
+
+            self.agent_list[agent.id].flight_state = agent.flight_state
+
+    def publish_waypoints(self):
+
+        for item in self.agent_list.items():  # Iterate through list of available agents
+            agent_id = item[0]
+            agent = item[1]
+
+            # IF agent is still executing current waypoint, then keep publishing the current one
+            if agent.executing_waypoint:
+                if not agent.current_waypoint_cmd: #This condition should not activate, otherwise there is bug present in the code
+                    self.get_logger().info("Agent {agent_id} has no current waypoint to follow!")
+                
+                self.usercommand_pub.publish(agent.current_waypoint_cmd)
+
+            # IF waypoints queue is not empty, send a new waypoint from the existing waypoint_queue
+            elif not agent.is_waypoint_queue_empty():
+                new_wp = agent.waypoint_queue[0]
+
+                waypoint_cmd = self.create_usercommand(
+                    cmd = "goto_velocity",
+                    uav_id = [agent_id],
+                    goal = Point(
+                        x = new_wp.pose.position.x,
+                        y = new_wp.pose.position.y,
+                        z = new_wp.pose.position.z,
+                    ),
+                    yaw = self.quaternion_to_euler(new_wp.pose.orientation)[2],
+                    is_external=True,
+                )
+
+                # Pop the first waypoint from the queue
+                agent.waypoint_queue.pop(0)
+                agent.new_waypoint_cmd(waypoint_cmd)
+
+                # Publish waypoint command to the agent
+                self.usercommand_pub.publish(waypoint_cmd)
+
+                # Refresh time since last waypoint was published
+                agent.time_at_last_cmd = time()
+
+                self.get_logger().info(
+                    "Published new waypoint ({},{},{}) with yaw {} for agent {}".format(
+                        waypoint_cmd.goal.x,
+                        waypoint_cmd.goal.y,
+                        waypoint_cmd.goal.z,
+                        waypoint_cmd.yaw,
+                        agent_id,
+                    )
+                )
+
+    def check_agent_timer_callback(self):
         """Check if agents has fulfilled waypoint. IF so, prepare it for the next waypoint 
         """
         for item in self.agent_list.items():
             agent_id = item[0]
             agent = item[1]
 
+            if agent.actual_pos is None:
+                self.get_logger().warn(f"No actual position obtained for Agent '{agent_id}'")
+                continue
+
             # Check if agent has fulfilled goal
             # If so, set "executing_waypoint" to FALSE so that agent is ready to accept new waypoints
-            if agent["executing_waypoint"] and agent["current_waypoint"]:
-                dist_to_goal = self.get_euclid_dist(agent["actual_pos"].pose.position, agent["current_waypoint"].goal)
+            if agent.executing_waypoint and agent.current_waypoint_cmd:
+
+                dist_to_goal = agent.get_dist_to_goal()
                 
-                self.get_logger().info(f"Agent {agent_id} has {dist_to_goal}m left to goal")
+                self.get_logger().info("Agent '{}' has {:.2f}m left to goal".format(agent_id, dist_to_goal), throttle_duration_sec=1.0)
 
                 if dist_to_goal < self.goal_tolerance:
                     self.get_logger().info(f"Agent {agent_id} has fulfilled waypoint, ready to accept next waypoint")
-                    agent["executing_waypoint"] = False
-                    agent["current_waypoint"] = None
+                    agent.complete_waypoint_cmd()
 
             # self.get_logger().info(
             #     f"""{agent_id} \n
@@ -131,176 +283,6 @@ class planner_ROS(Node):
             #     mission_capable: {agent['mission_capable']}
             #     """
             # )
-
-    def agent_state_callback(self, agent_states):
-        time_now = time()
-
-        for agent in agent_states.agents:
-            if agent.id not in self.agent_list:
-                self.get_logger().error(
-                    f"Agent {agent.id} has been removed from agent list. Ignoring..."
-                )
-                continue
-
-            self.agent_list[agent.id]["flight_state"] = agent.flight_state
-
-            # # Remove agents not in the desired state
-            # if agent.flight_state not in {
-            #     AgentState.MOVE,
-            #     AgentState.IDLE,
-            #     AgentState.TAKEOFF,
-            #     AgentState.HOVER
-            # }:
-            #     print(
-            #         f"Agent {agent.id} state is not in desired state, currently {agent.flight_state}"
-            #     )
-            #     # self.remove_agent_from_list(agent.id)
-
-            # Check if mission has timed out
-            # execution_time_elapsed = time_now - self.agent_list[agent.id]["time_at_last_cmd"]
-            # if execution_time_elapsed > self.agent_timeout:
-            #     self.get_logger().error(f"Agent {agent.id} exceeded timeout of {self.agent_timeout}s in executing mission. Removing from agent list")
-            #     self.remove_agent_from_list(agent.id)
-            # else:
-            #     self.get_logger().info(f"Agent {agent.id} is {execution_time_elapsed}s into executing mission")
-
-    def publish_waypoints(self):
-
-        for item in self.agent_list.items():  # Iterate through list of available agents
-            agent_id = item[0]
-            agent = item[1]
-
-            # IF agent is still executing current waypoint, then keep publishing the current one
-            if agent["executing_waypoint"]:
-                # self.get_logger().info(
-                #     f"Agent {agent_id} has not finished executing waypoints, no new waypoints will be sent."
-                # )
-                if not agent["current_waypoint"]:
-                    self.get_logger().info("Agent {agent_id} has no current waypoint to follow!")
-                
-                self.usercommand_pub.publish(agent["current_waypoint"])
-
-            # Send a new waypoint from the existing waypoint_queue
-            elif (len(agent["waypoint_queue"]) > 0):
-                current_wp = agent["waypoint_queue"][0]
-
-                waypoint = self.create_usercommand(
-                    cmd = "goto_velocity",
-                    uav_id = [agent_id],
-                    goal = Point(
-                        x = current_wp.pose.position.x,
-                        y = current_wp.pose.position.y,
-                        z = current_wp.pose.position.z,
-                    ),
-                    yaw = self.quaternion_to_euler(current_wp.pose.orientation)[2],
-                    is_external=True,
-                )
-
-                self.usercommand_pub.publish(waypoint)
-
-                agent["executing_waypoint"] = True
-                agent["current_waypoint"] = waypoint
-                # Pop the first waypoint from the queue
-                agent["waypoint_queue"].pop(0)
-                # Refresh time since last waypoint was published
-                agent["time_at_last_cmd"] = time()
-
-                self.get_logger().info(
-                    "Published new waypoint ({},{},{}) with yaw {} for agent {}".format(
-                        waypoint.goal.x,
-                        waypoint.goal.y,
-                        waypoint.goal.z,
-                        waypoint.yaw,
-                        agent_id,
-                    )
-                )
-
-    # def waypoint_pub(self, waypoints_list):
-
-    #     for name, _ in self.agent_list.items():
-    #         if (
-    #             self.waypoint[name] is not None and self["actual_pos"][name] is not None
-    #         ):  # only publish if waypoint is set and position is known
-
-    #             if np.linalg.norm(self.waypoint[name] - self["actual_pos"][name]) <= 0.5:
-    #                 waypoint = UserCommand()
-
-    #                 waypoint.cmd = "goto_velocity"
-    #                 waypoint.uav_id.append(name)  # cf1
-    #                 waypoint.goal.x = (
-    #                     (640 - self.waypoint[name][0][0]) * 5 / 640
-    #                 )  # change the distance
-    #                 waypoint.goal.y = (
-    #                     (480 - self.waypoint[name][0][1]) * 5 / 480
-    #                 )  # change the distance
-    #                 waypoint.goal.z = 2
-    #                 yaw = self.waypoint[name][1] * np.pi / 2 - np.pi / 4
-    #                 waypoint.goal.yaw = yaw
-
-    #                 self.publisher.publish(waypoint)
-
-    #                 self.get_logger().info(
-    #                     "Publishing waypoint: {},{},{} with yaw {} for crazyflie {}".format(
-    #                         waypoint.goal.x,
-    #                         waypoint.goal.y,
-    #                         waypoint.goal.z,
-    #                         waypoint.goal.yaw,
-    #                         name,
-    #                     )
-    #                 )
-    #                 self.waypoint[name] = ()
-    #                 continue
-
-    #     for name, _ in self.agent_list.items():  # Need a flag to send next waypoint
-    #         if self.waypoint[name] is None:
-    #             self.get_logger().info("Calculating next waypoint")
-    #             (
-    #                 next_position_list,
-    #                 done,
-    #             ) = self.get_next_position()  # To replace with fake setpoints
-    #             for i, position in enumerate(self.all_robot_positions):
-    #                 name = self.robot_list[i].cf_id
-    #                 for node in self.env.map.nodes_list:
-    #                     if (node.coords == position).all():
-    #                         heading = node.current_heading
-    #                 self.waypoint[name] = [position, heading]
-
-    # if done:
-    #     rclpy.shutdown()
-
-    def get_euclid_dist(self, point_a, point_b):
-        """Get the 3D euclidean distance between 2 geometry_msgs.msg.Point messages
-
-        Parameters
-        ----------
-        point_a : geometry_msgs.msg.Point
-            Origin Point
-        point_b : geometry_msgs.msg.Point
-            Goal Point
-
-        Returns
-        -------
-        float
-            Distance between point a and b
-        """
-        dx = point_a.x - point_b.x
-        dy = point_a.y - point_b.y
-        dz = point_a.z - point_b.z
-
-        return np.sqrt(dx * dx + dy * dy + dz * dz)
-
-    def remove_agent_from_list(self, agent_id):
-        """Remove a crazyflie agent from the internal list
-
-        Parameters
-        ----------
-        agent_id : String
-            ID of crazyflie agent to be removed
-        """
-        try:
-            self.agent_list.pop(agent_id)
-        except KeyError:
-            self.get_logger().info(f"Unable to remove agent {agent_id}")
 
     def takeoff_all(self):
         """Helper method to command all crazyflies to take off
@@ -363,8 +345,6 @@ class planner_ROS(Node):
         usercommand.is_external = is_external
 
         return usercommand
-
-# Converts ROS2 Quaterion message to yaw
 
     def quaternion_to_euler(self, quaternion):
         """
@@ -438,6 +418,9 @@ def main():
     planner_ros = planner_ROS(
         policy_net=policy_net, k_size=k_size, device=device, greedy=True
     )
+
+    # All drones takeoff
+    # planner_ros.takeoff_all()
 
     rclpy.spin(planner_ros)  # Keep node alive
 

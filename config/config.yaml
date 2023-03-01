@@ -1,0 +1,11 @@
+# Timeout for agent before it is removed
+agent_timeout: 10.0
+
+# Time period for publishing waypoint callback (seconds)
+pub_wp_timer_period: 0.5
+
+# Time period for checking if agent has fulfilled goals
+check_agent_timer_period: 0.25
+
+# Distance between goal and actual pose for goal to be fulfilled (meters)
+goal_tolerance: 0.1
