@@ -6,6 +6,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from crazyswarm_application.msg import AgentState, AgentsStateFeedback, UserCommand
+from .modules.map import map
 
 def get_euclid_dist(point_a, point_b):
     """Get the 3D euclidean distance between 2 geometry_msgs.msg.Point messages
